@@ -25,8 +25,7 @@ pipeline {
             steps {
                 dir("${APP_DIR}") {
                     sh '''
-                        pm2 describe ${PM2_APP_NAME} > /dev/null 2>&1
-                        if [ $? -eq 0 ]; then
+                        if pm2 describe ${PM2_APP_NAME} > /dev/null 2>&1; then
                             echo "Restarting ${PM2_APP_NAME}..."
                             pm2 restart ${PM2_APP_NAME}
                         else
