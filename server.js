@@ -5,7 +5,33 @@ const mysql = require('mysql2/promise');
 const OpenAI = require('openai');
 const { exec } = require('child_process');
 const util = require('util');
+const net = require('net');
 const execPromise = util.promisify(exec);
+
+// 포트 체크 함수
+const checkPort = (host, port, timeout = 2000) => {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let status = false;
+
+    socket.setTimeout(timeout);
+    socket.on('connect', () => {
+      status = true;
+      socket.destroy();
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+    });
+    socket.on('error', () => {
+      socket.destroy();
+    });
+    socket.on('close', () => {
+      resolve({ port, open: status });
+    });
+
+    socket.connect(port, host);
+  });
+};
 
 const app = express();
 app.use(cors());
@@ -443,7 +469,9 @@ app.get('/api/servers/:id/status', async (req, res) => {
 
     const server = rows[0];
     let pingResult = { alive: false, latency: null };
+    let portResults = [];
 
+    // Ping 체크
     try {
       const { stdout } = await execPromise(`ping -c 1 -W 2 ${server.ip_address}`);
       const match = stdout.match(/time=(\d+\.?\d*)/);
@@ -455,7 +483,15 @@ app.get('/api/servers/:id/status', async (req, res) => {
       pingResult = { alive: false, latency: null };
     }
 
-    res.json({ ...server, ping: pingResult });
+    // 포트 체크
+    if (server.ports) {
+      const portList = server.ports.split(',').map(p => parseInt(p.trim())).filter(p => !isNaN(p));
+      portResults = await Promise.all(
+        portList.map(port => checkPort(server.ip_address, port))
+      );
+    }
+
+    res.json({ ...server, ping: pingResult, portStatus: portResults });
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: 'server status error' });
@@ -464,12 +500,12 @@ app.get('/api/servers/:id/status', async (req, res) => {
 
 app.post('/api/servers', async (req, res) => {
   try {
-    const { name, ip_address, os, purpose, cpu, memory, disk, status } = req.body;
+    const { name, ip_address, os, purpose, cpu, memory, disk, status, ports } = req.body;
 
     const [result] = await pool.query(`
-      INSERT INTO servers (name, ip_address, os, purpose, cpu, memory, disk, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [name, ip_address, os, purpose, cpu, memory, disk, status || '운영중']);
+      INSERT INTO servers (name, ip_address, os, purpose, cpu, memory, disk, status, ports)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [name, ip_address, os, purpose, cpu, memory, disk, status || '운영중', ports || null]);
 
     res.json({ message: '서버 등록 성공', id: result.insertId });
   } catch (e) {
@@ -480,14 +516,14 @@ app.post('/api/servers', async (req, res) => {
 
 app.put('/api/servers/:id', async (req, res) => {
   try {
-    const { name, ip_address, os, purpose, cpu, memory, disk, status } = req.body;
+    const { name, ip_address, os, purpose, cpu, memory, disk, status, ports } = req.body;
 
     await pool.query(`
       UPDATE servers SET
         name = ?, ip_address = ?, os = ?, purpose = ?,
-        cpu = ?, memory = ?, disk = ?, status = ?
+        cpu = ?, memory = ?, disk = ?, status = ?, ports = ?
       WHERE id = ?
-    `, [name, ip_address, os, purpose, cpu, memory, disk, status, req.params.id]);
+    `, [name, ip_address, os, purpose, cpu, memory, disk, status, ports, req.params.id]);
 
     res.json({ message: '서버 수정 성공' });
   } catch (e) {
