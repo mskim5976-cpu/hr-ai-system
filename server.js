@@ -92,6 +92,18 @@ app.get('/api/dashboard/stats', async (_, res) => {
       ORDER BY contract_end
     `);
 
+    // 파견 만료 예정 인력 (30일 이내)
+    const [expiringAssignments] = await pool.query(`
+      SELECT a.id, a.end_date, e.name as employee_name, e.applied_part,
+             s.name as site_name, DATEDIFF(a.end_date, CURDATE()) as days_left
+      FROM assignments a
+      JOIN employees e ON a.employee_id = e.id
+      JOIN sites s ON a.site_id = s.id
+      WHERE a.status = '진행중'
+        AND a.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      ORDER BY a.end_date
+    `);
+
     res.json({
       statusCounts: statusCounts.reduce((acc, row) => {
         acc[row.status] = row.count;
@@ -100,7 +112,8 @@ app.get('/api/dashboard/stats', async (_, res) => {
       total: totalCount[0].total,
       siteStats,
       recentEmployees,
-      expiringContracts
+      expiringContracts,
+      expiringAssignments
     });
   } catch (e) {
     console.error(e);
@@ -208,15 +221,24 @@ app.post('/api/employees', async (req, res) => {
 
 app.put('/api/employees/:id', async (req, res) => {
   try {
-    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status, skills } = req.body;
+    const { skills } = req.body;
 
-    await pool.query(`
-      UPDATE employees SET
-        name = ?, department_id = ?, position = ?, hire_date = ?,
-        email = ?, phone = ?, age = ?, address = ?, applied_part = ?,
-        birth_date = ?, status = ?
-      WHERE id = ?
-    `, [name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status, req.params.id]);
+    // 동적으로 업데이트할 필드만 처리
+    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status'];
+    const updates = [];
+    const values = [];
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        values.push(req.body[field] || null);
+      }
+    }
+
+    if (updates.length > 0) {
+      values.push(req.params.id);
+      await pool.query(`UPDATE employees SET ${updates.join(', ')} WHERE id = ?`, values);
+    }
 
     // 기술역량 업데이트
     if (skills) {
@@ -408,19 +430,31 @@ app.post('/api/assignments', async (req, res) => {
 
 app.put('/api/assignments/:id', async (req, res) => {
   try {
-    const { start_date, end_date, monthly_rate, status } = req.body;
-
     // 현재 배정 정보 조회
     const [current] = await pool.query(`SELECT * FROM assignments WHERE id = ?`, [req.params.id]);
+    if (!current.length) {
+      return res.status(404).json({ message: 'assignment not found' });
+    }
 
-    await pool.query(`
-      UPDATE assignments SET
-        start_date = ?, end_date = ?, monthly_rate = ?, status = ?
-      WHERE id = ?
-    `, [start_date, end_date, monthly_rate, status, req.params.id]);
+    // 동적으로 업데이트할 필드만 처리
+    const allowedFields = ['start_date', 'end_date', 'monthly_rate', 'status'];
+    const updates = [];
+    const values = [];
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = ?`);
+        values.push(req.body[field] || null);
+      }
+    }
+
+    if (updates.length > 0) {
+      values.push(req.params.id);
+      await pool.query(`UPDATE assignments SET ${updates.join(', ')} WHERE id = ?`, values);
+    }
 
     // 파견 종료시 직원 상태 변경
-    if (status === '종료' && current.length > 0) {
+    if (req.body.status === '종료') {
       await pool.query(`UPDATE employees SET status = '대기' WHERE id = ?`, [current[0].employee_id]);
     }
 
