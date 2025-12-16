@@ -52,6 +52,33 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 app.get('/', (_, res) => res.send('HR API OK'));
 
 // ============================================
+// 인증 API
+// ============================================
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ message: '아이디와 비밀번호를 입력하세요.' });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, username, name, role FROM users WHERE username = ? AND password = ?`,
+      [username, password]
+    );
+
+    if (rows.length === 0) {
+      return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+    }
+
+    res.json({ user: rows[0], message: '로그인 성공' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: '로그인 오류' });
+  }
+});
+
+// ============================================
 // 대시보드 API
 // ============================================
 app.get('/api/dashboard/stats', async (_, res) => {
