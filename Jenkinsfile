@@ -48,10 +48,10 @@ pipeline {
 
     post {
         success {
-            echo 'HR AI System deployment successful!'
+            echo 'HR AI System (Backend) deployment successful!'
         }
         failure {
-            echo 'HR AI System deployment failed!'
+            echo 'HR AI System (Backend) deployment failed!'
         }
     }
 }
