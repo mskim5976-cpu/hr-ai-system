@@ -249,6 +249,11 @@ app.post('/api/employees', async (req, res) => {
 app.put('/api/employees/:id', async (req, res) => {
   try {
     const { skills } = req.body;
+    const employeeId = req.params.id;
+
+    // 현재 직원 상태 조회 (파견중인지 확인)
+    const [currentEmployee] = await pool.query(`SELECT status FROM employees WHERE id = ?`, [employeeId]);
+    const currentStatus = currentEmployee[0]?.status;
 
     // 동적으로 업데이트할 필드만 처리
     const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status'];
@@ -263,17 +268,27 @@ app.put('/api/employees/:id', async (req, res) => {
     }
 
     if (updates.length > 0) {
-      values.push(req.params.id);
+      values.push(employeeId);
       await pool.query(`UPDATE employees SET ${updates.join(', ')} WHERE id = ?`, values);
+    }
+
+    // 파견중 → 다른 상태로 변경 시 진행중인 파견 자동 종료
+    const newStatus = req.body.status;
+    if (currentStatus === '파견중' && newStatus && newStatus !== '파견중') {
+      const today = new Date().toISOString().split('T')[0];
+      await pool.query(
+        `UPDATE assignments SET status = '종료', end_date = ? WHERE employee_id = ? AND status = '진행중'`,
+        [today, employeeId]
+      );
     }
 
     // 기술역량 업데이트
     if (skills) {
-      await pool.query(`DELETE FROM employee_skills WHERE employee_id = ?`, [req.params.id]);
+      await pool.query(`DELETE FROM employee_skills WHERE employee_id = ?`, [employeeId]);
       for (const skill of skills) {
         await pool.query(
           `INSERT INTO employee_skills (employee_id, skill_id, level) VALUES (?, ?, ?)`,
-          [req.params.id, skill.id, skill.level || '중급']
+          [employeeId, skill.id, skill.level || '중급']
         );
       }
     }
