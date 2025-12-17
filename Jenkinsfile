@@ -20,7 +20,7 @@ pipeline {
                         git config --global --add safe.directory ${APP_DIR}
                         git fetch origin develop
                         git checkout develop
-                        git pull origin develop
+                        git reset --hard origin/develop
                     '''
                 }
             }
