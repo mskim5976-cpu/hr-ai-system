@@ -13,6 +13,19 @@ pipeline {
             }
         }
 
+        stage('Pull Latest Code') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        git config --global --add safe.directory ${APP_DIR}
+                        git fetch origin develop
+                        git checkout develop
+                        git pull origin develop
+                    '''
+                }
+            }
+        }
+
         stage('Install Dependencies') {
             steps {
                 dir("${APP_DIR}") {
