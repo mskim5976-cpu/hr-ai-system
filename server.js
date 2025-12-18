@@ -829,6 +829,17 @@ app.get('/api/ai/reports/:id', async (req, res) => {
   }
 });
 
+// 보고서 삭제
+app.delete('/api/ai/reports/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM ai_reports WHERE id = ?`, [req.params.id]);
+    res.json({ message: '보고서 삭제 성공' });
+  } catch (e) {
+    console.error('Report delete error:', e);
+    res.status(500).json({ message: '보고서 삭제 오류' });
+  }
+});
+
 // ============================================
 // 서버 시작
 // ============================================
