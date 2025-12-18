@@ -764,8 +764,75 @@ app.post('/api/employees/:id/ai-comment', async (req, res) => {
 });
 
 // ============================================
+// AI 보고서 저장/조회 API
+// ============================================
+
+// 테이블 초기화 함수
+const initReportsTable = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        content TEXT,
+        generated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('ai_reports table ready');
+  } catch (e) {
+    console.error('Failed to create ai_reports table:', e);
+  }
+};
+
+// 보고서 저장
+app.post('/api/ai/reports', async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const [result] = await pool.query(
+      `INSERT INTO ai_reports (title, content) VALUES (?, ?)`,
+      [title, content]
+    );
+    res.json({ id: result.insertId, message: '보고서 저장 성공' });
+  } catch (e) {
+    console.error('Report save error:', e);
+    res.status(500).json({ message: '보고서 저장 오류' });
+  }
+});
+
+// 보고서 목록 조회
+app.get('/api/ai/reports', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, title, generated_at FROM ai_reports ORDER BY generated_at DESC`
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error('Report list error:', e);
+    res.status(500).json({ message: '보고서 목록 조회 오류' });
+  }
+});
+
+// 보고서 상세 조회
+app.get('/api/ai/reports/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT * FROM ai_reports WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ message: '보고서를 찾을 수 없습니다' });
+    }
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('Report detail error:', e);
+    res.status(500).json({ message: '보고서 조회 오류' });
+  }
+});
+
+// ============================================
 // 서버 시작
 // ============================================
-app.listen(process.env.PORT || 4000, () =>
-  console.log(`API on :${process.env.PORT || 4000}`)
-);
+app.listen(process.env.PORT || 4000, async () => {
+  await initReportsTable();
+  console.log(`API on :${process.env.PORT || 4000}`);
+});
