@@ -619,6 +619,126 @@ app.delete('/api/servers/:id', async (req, res) => {
 });
 
 // ============================================
+// AI 보고서 API (사내 AI 서버 사용)
+// ============================================
+const AI_SERVER_URL = 'http://211.236.174.220:6060/v1/chat/completions';
+
+app.post('/api/ai/report', async (req, res) => {
+  try {
+    // 1. 대시보드 통계 데이터 수집
+    const [statusCounts] = await pool.query(`
+      SELECT status, COUNT(*) as count
+      FROM employees
+      GROUP BY status
+    `);
+
+    const [totalCount] = await pool.query(`SELECT COUNT(*) as total FROM employees`);
+
+    const [siteStats] = await pool.query(`
+      SELECT s.name as site_name, COUNT(a.id) as employee_count
+      FROM sites s
+      LEFT JOIN assignments a ON s.id = a.site_id AND a.status = '진행중'
+      WHERE s.status = '진행중'
+      GROUP BY s.id, s.name
+    `);
+
+    const [expiringContracts] = await pool.query(`
+      SELECT name, contract_end,
+             DATEDIFF(contract_end, CURDATE()) as days_left
+      FROM sites
+      WHERE contract_end BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      ORDER BY contract_end
+    `);
+
+    const [expiringAssignments] = await pool.query(`
+      SELECT a.id, a.end_date, e.name as employee_name, e.applied_part,
+             s.name as site_name, DATEDIFF(a.end_date, CURDATE()) as days_left
+      FROM assignments a
+      JOIN employees e ON a.employee_id = e.id
+      JOIN sites s ON a.site_id = s.id
+      WHERE a.status = '진행중'
+        AND a.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      ORDER BY a.end_date
+    `);
+
+    // 2. 통계 데이터 정리
+    const statusMap = statusCounts.reduce((acc, row) => {
+      acc[row.status] = row.count;
+      return acc;
+    }, {});
+
+    // 3. 프롬프트 구성
+    const today = new Date().toISOString().split('T')[0];
+    const prompt = `당신은 IT 인력 관리 전문가입니다. 아래 데이터를 바탕으로 인력현황요약보고서를 작성해주세요.
+
+## 현재 날짜: ${today}
+
+## 인력 현황
+- 전체 인원: ${totalCount[0].total}명
+- 파견중: ${statusMap['파견중'] || 0}명
+- 대기: ${statusMap['대기'] || 0}명
+- 재직: ${statusMap['재직'] || 0}명
+- 퇴사: ${statusMap['퇴사'] || 0}명
+
+## 파견 사이트별 인원
+${siteStats.map(s => `- ${s.site_name}: ${s.employee_count}명`).join('\n') || '- 파견 데이터 없음'}
+
+## 계약 만료 예정 사이트 (30일 이내)
+${expiringContracts.map(c => `- ${c.name}: ${c.contract_end.toISOString().split('T')[0]} (${c.days_left}일 남음)`).join('\n') || '- 해당 없음'}
+
+## 파견 만료 예정 인력 (30일 이내)
+${expiringAssignments.map(a => `- ${a.employee_name} (${a.applied_part || '미지정'}): ${a.site_name} - ${a.end_date.toISOString().split('T')[0]} (${a.days_left}일 남음)`).join('\n') || '- 해당 없음'}
+
+---
+위 데이터를 기반으로 다음 형식의 보고서를 작성해주세요:
+
+1. **요약**: 전체 인력 현황을 2~3문장으로 요약
+2. **주요 현황**: 파견 현황 및 사이트별 인력 배치 상황
+3. **주의 사항**: 계약/파견 만료 예정 건에 대한 주의사항
+4. **권고 사항**: 인력 운영 관련 권고사항
+
+보고서는 한국어로 작성하고, 전문적이고 간결한 톤을 유지해주세요.`;
+
+    // 4. 사내 AI 서버 호출
+    const aiResponse = await fetch(AI_SERVER_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-oss',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 2048,
+        temperature: 0.7,
+      }),
+    });
+
+    if (!aiResponse.ok) {
+      throw new Error(`AI server error: ${aiResponse.status}`);
+    }
+
+    const aiData = await aiResponse.json();
+    const reportContent = aiData.choices[0]?.message?.content || '보고서 생성에 실패했습니다.';
+
+    // 5. 결과 반환
+    res.json({
+      report: reportContent,
+      generatedAt: new Date().toISOString(),
+      stats: {
+        total: totalCount[0].total,
+        statusCounts: statusMap,
+        siteStats,
+        expiringContracts: expiringContracts.length,
+        expiringAssignments: expiringAssignments.length,
+      }
+    });
+  } catch (e) {
+    console.error('AI Report Error:', e);
+    res.status(500).json({ message: 'AI 보고서 생성 오류', error: e.message });
+  }
+});
+
+// ============================================
 // AI 코멘트 API (기존)
 // ============================================
 app.post('/api/employees/:id/ai-comment', async (req, res) => {
