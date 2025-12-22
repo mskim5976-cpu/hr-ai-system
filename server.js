@@ -51,6 +51,50 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // ============================================
 app.get('/', (_, res) => res.send('HR API OK'));
 
+// AI 서버 상태 확인 API
+app.get('/api/ai/health', (req, res) => {
+  const http = require('http');
+  const options = {
+    hostname: '211.236.174.221',
+    port: 80,
+    path: '/v1/models',
+    method: 'GET',
+    timeout: 5000,
+  };
+
+  const request = http.request(options, (response) => {
+    let data = '';
+    response.on('data', (chunk) => { data += chunk; });
+    response.on('end', () => {
+      if (response.statusCode === 200) {
+        try {
+          const parsed = JSON.parse(data);
+          res.json({
+            status: 'connected',
+            message: 'AI 서버 연결됨',
+            models: parsed.data?.map(m => m.id) || [],
+          });
+        } catch (e) {
+          res.json({ status: 'connected', message: 'AI 서버 연결됨', models: [] });
+        }
+      } else {
+        res.json({ status: 'error', message: `AI 서버 응답 오류: ${response.statusCode}` });
+      }
+    });
+  });
+
+  request.on('error', () => {
+    res.json({ status: 'disconnected', message: 'AI 서버 연결 실패' });
+  });
+
+  request.on('timeout', () => {
+    request.destroy();
+    res.json({ status: 'disconnected', message: 'AI 서버 연결 시간 초과' });
+  });
+
+  request.end();
+});
+
 // ============================================
 // 인증 API
 // ============================================
@@ -622,6 +666,7 @@ app.delete('/api/servers/:id', async (req, res) => {
 // AI 보고서 API (사내 AI 서버 사용)
 // ============================================
 const AI_SERVER_URL = 'http://211.236.174.221/v1/chat/completions';
+const AI_MODELS_URL = 'http://211.236.174.221/v1/models';
 
 app.post('/api/ai/report', async (req, res) => {
   try {
