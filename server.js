@@ -621,7 +621,7 @@ app.delete('/api/servers/:id', async (req, res) => {
 // ============================================
 // AI 보고서 API (사내 AI 서버 사용)
 // ============================================
-const AI_SERVER_URL = 'http://211.236.174.221:8001/v1/chat/completions';
+const AI_SERVER_URL = 'http://211.236.174.221/v1/chat/completions';
 
 app.post('/api/ai/report', async (req, res) => {
   try {
@@ -690,36 +690,71 @@ ${expiringContracts.map(c => `- ${c.name}: ${c.contract_end.toISOString().split(
 ${expiringAssignments.map(a => `- ${a.employee_name} (${a.applied_part || '미지정'}): ${a.site_name} - ${a.end_date.toISOString().split('T')[0]} (${a.days_left}일 남음)`).join('\n') || '- 해당 없음'}
 
 ---
-위 데이터를 기반으로 다음 형식의 보고서를 작성해주세요:
+위 데이터를 기반으로 아래 형식 그대로 보고서를 작성해주세요. 반드시 **숫자. 제목** 형식을 지켜주세요:
 
-1. **요약**: 전체 인력 현황을 2~3문장으로 요약
-2. **주요 현황**: 파견 현황 및 사이트별 인력 배치 상황
-3. **주의 사항**: 계약/파견 만료 예정 건에 대한 주의사항
-4. **권고 사항**: 인력 운영 관련 권고사항
+**1. 요약**
+전체 인력 현황을 2~3문장으로 요약
+
+**2. 주요 현황**
+- **사이트명**: 인원수
+형식으로 파견 현황 정리
+
+**3. 주의 사항**
+- **만료일**: 해당 내용
+형식으로 만료 예정 건 정리
+
+**4. 권고 사항**
+1. **권고제목** 권고내용
+형식으로 권고사항 정리
 
 보고서는 한국어로 작성하고, 전문적이고 간결한 톤을 유지해주세요.`;
 
-    // 4. 사내 AI 서버 호출
-    const aiResponse = await fetch(AI_SERVER_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 8192,
-        temperature: 0.7,
-      }),
-    });
+    // 4. 사내 AI 서버 호출 (재시도 로직 포함)
+    const MAX_RETRIES = 3;
+    let reportContent = null;
 
-    if (!aiResponse.ok) {
-      throw new Error(`AI server error: ${aiResponse.status}`);
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      console.log(`AI 요청 시도 ${attempt}/${MAX_RETRIES}`);
+
+      const aiResponse = await fetch(AI_SERVER_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'qwen-vl-72b',
+          messages: [
+            { role: 'user', content: prompt }
+          ],
+          max_tokens: 16000,
+          temperature: 0.7,
+        }),
+      });
+
+      if (!aiResponse.ok) {
+        throw new Error(`AI server error: ${aiResponse.status}`);
+      }
+
+      const aiData = await aiResponse.json();
+      console.log('AI Response:', JSON.stringify(aiData, null, 2));
+
+      reportContent = aiData.choices[0]?.message?.content;
+
+      if (reportContent) {
+        console.log(`성공: ${attempt}번째 시도에서 응답 받음`);
+        break;
+      }
+
+      console.log(`실패: content가 null (finish_reason: ${aiData.choices[0]?.finish_reason})`);
+
+      if (attempt < MAX_RETRIES) {
+        console.log('재시도 중...');
+      }
     }
 
-    const aiData = await aiResponse.json();
-    console.log('AI Response:', JSON.stringify(aiData, null, 2));
-    const reportContent = aiData.choices[0]?.message?.content || '보고서 생성에 실패했습니다.';
+    if (!reportContent) {
+      reportContent = '보고서 생성에 실패했습니다. (3회 재시도 후 실패)';
+    }
 
     // 5. 결과 반환
     res.json({
@@ -800,13 +835,28 @@ app.post('/api/ai/reports', async (req, res) => {
   }
 });
 
-// 보고서 목록 조회
+// 보고서 목록 조회 (페이지네이션 지원)
 app.get('/api/ai/reports', async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM ai_reports`);
     const [rows] = await pool.query(
-      `SELECT id, title, generated_at FROM ai_reports ORDER BY generated_at DESC`
+      `SELECT id, title, generated_at FROM ai_reports ORDER BY generated_at DESC LIMIT ? OFFSET ?`,
+      [limit, offset]
     );
-    res.json(rows);
+
+    res.json({
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (e) {
     console.error('Report list error:', e);
     res.status(500).json({ message: '보고서 목록 조회 오류' });
