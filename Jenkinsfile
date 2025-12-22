@@ -38,14 +38,9 @@ pipeline {
             steps {
                 dir("${APP_DIR}") {
                     sh '''
-                        if pm2 describe ${PM2_APP_NAME} > /dev/null 2>&1; then
-                            echo "Restarting ${PM2_APP_NAME}..."
-                            pm2 restart ${PM2_APP_NAME}
-                        else
-                            echo "Starting ${PM2_APP_NAME}..."
-                            pm2 start server.js --name ${PM2_APP_NAME}
-                        fi
-                        pm2 save
+                        echo "Restarting ${PM2_APP_NAME} (root pm2)..."
+                        sudo pm2 restart ${PM2_APP_NAME} || sudo pm2 start server.js --name ${PM2_APP_NAME}
+                        sudo pm2 save
                     '''
                 }
             }
