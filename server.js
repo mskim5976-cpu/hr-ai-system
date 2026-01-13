@@ -665,8 +665,8 @@ app.delete('/api/servers/:id', async (req, res) => {
 // ============================================
 // AI 보고서 API (사내 AI 서버 사용)
 // ============================================
-const AI_SERVER_URL = 'http://211.236.174.221/v1/chat/completions';
-const AI_MODELS_URL = 'http://211.236.174.221/v1/models';
+const AI_SERVER_URL = 'http://211.236.174.221:4000/v1/chat/completions';
+const AI_MODELS_URL = 'http://211.236.174.221:4000/v1/models';
 
 app.post('/api/ai/report', async (req, res) => {
   try {
@@ -767,11 +767,11 @@ ${expiringAssignments.map(a => `- ${a.employee_name} (${a.applied_part || '미�
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'qwen-vl-72b',
+          model: 'qwen-vl-32b',
           messages: [
             { role: 'user', content: prompt }
           ],
-          max_tokens: 16000,
+          max_tokens: 4096,
           temperature: 0.7,
         }),
       });
