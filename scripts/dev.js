@@ -1,19 +1,20 @@
 const { spawn, exec } = require('child_process');
-const net = require('net');
 const path = require('path');
 
 const PORT = process.env.PORT || 4040;
 
-// Check if port is in use
+// Check if port is in use (using netstat for reliability)
 function checkPort(port) {
   return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(true));  // Port in use
-    server.once('listening', () => {
-      server.close();
-      resolve(false);  // Port available
-    });
-    server.listen(port);
+    if (process.platform === 'win32') {
+      exec(`netstat -ano | findstr :${port} | findstr LISTENING`, { shell: 'cmd.exe' }, (err, stdout) => {
+        resolve(stdout && stdout.trim().length > 0);
+      });
+    } else {
+      exec(`lsof -ti:${port}`, (err, stdout) => {
+        resolve(stdout && stdout.trim().length > 0);
+      });
+    }
   });
 }
 
