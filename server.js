@@ -51,6 +51,50 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // ============================================
 app.get('/', (_, res) => res.send('HR API OK'));
 
+// AI 서버 상태 확인 API
+app.get('/api/ai/health', (req, res) => {
+  const http = require('http');
+  const options = {
+    hostname: '211.236.174.221',
+    port: 80,
+    path: '/v1/models',
+    method: 'GET',
+    timeout: 5000,
+  };
+
+  const request = http.request(options, (response) => {
+    let data = '';
+    response.on('data', (chunk) => { data += chunk; });
+    response.on('end', () => {
+      if (response.statusCode === 200) {
+        try {
+          const parsed = JSON.parse(data);
+          res.json({
+            status: 'connected',
+            message: 'AI 서버 연결됨',
+            models: parsed.data?.map(m => m.id) || [],
+          });
+        } catch (e) {
+          res.json({ status: 'connected', message: 'AI 서버 연결됨', models: [] });
+        }
+      } else {
+        res.json({ status: 'error', message: `AI 서버 응답 오류: ${response.statusCode}` });
+      }
+    });
+  });
+
+  request.on('error', () => {
+    res.json({ status: 'disconnected', message: 'AI 서버 연결 실패' });
+  });
+
+  request.on('timeout', () => {
+    request.destroy();
+    res.json({ status: 'disconnected', message: 'AI 서버 연결 시간 초과' });
+  });
+
+  request.end();
+});
+
 // ============================================
 // 인증 API
 // ============================================
@@ -156,7 +200,7 @@ app.get('/api/employees', async (req, res) => {
     const { status, search } = req.query;
     let query = `
       SELECT e.id, e.name, e.position, e.hire_date, e.status, e.email, e.phone,
-             e.age, e.address, e.applied_part, e.birth_date,
+             e.age, e.address, e.applied_part, e.birth_date, e.gender,
              d.name AS department
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.id
@@ -169,8 +213,20 @@ app.get('/api/employees', async (req, res) => {
       params.push(status);
     }
     if (search) {
-      query += ` AND (e.name LIKE ? OR e.email LIKE ? OR e.phone LIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      query += ` AND (
+        e.name LIKE ? OR
+        e.email LIKE ? OR
+        e.phone LIKE ? OR
+        e.address LIKE ? OR
+        e.gender LIKE ? OR
+        e.position LIKE ? OR
+        e.applied_part LIKE ? OR
+        e.status LIKE ? OR
+        e.work_history LIKE ? OR
+        e.project_history LIKE ?
+      )`;
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
     }
 
     query += ` ORDER BY e.id DESC`;
@@ -206,15 +262,15 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, skills } = req.body;
+    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, skills, project_history, gender, current_company, work_period, work_history } = req.body;
 
     if (!name) {
       return res.status(400).json({ message: '이름은 필수입니다.' });
     }
 
     const sql = `INSERT INTO employees
-      (name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '대기')`;
+      (name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status, project_history, gender, current_company, work_period, work_history)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '대기', ?, ?, ?, ?, ?)`;
 
     const [result] = await pool.query(sql, [
       name,
@@ -227,6 +283,11 @@ app.post('/api/employees', async (req, res) => {
       address || null,
       applied_part || null,
       birth_date || null,
+      project_history || null,
+      gender || null,
+      current_company || null,
+      work_period || null,
+      work_history || null,
     ]);
 
     // 기술역량 추가
@@ -249,9 +310,14 @@ app.post('/api/employees', async (req, res) => {
 app.put('/api/employees/:id', async (req, res) => {
   try {
     const { skills } = req.body;
+    const employeeId = req.params.id;
+
+    // 현재 직원 상태 조회 (파견중인지 확인)
+    const [currentEmployee] = await pool.query(`SELECT status FROM employees WHERE id = ?`, [employeeId]);
+    const currentStatus = currentEmployee[0]?.status;
 
     // 동적으로 업데이트할 필드만 처리
-    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status'];
+    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status', 'project_history', 'gender', 'current_company', 'work_period', 'work_history'];
     const updates = [];
     const values = [];
 
@@ -263,17 +329,27 @@ app.put('/api/employees/:id', async (req, res) => {
     }
 
     if (updates.length > 0) {
-      values.push(req.params.id);
+      values.push(employeeId);
       await pool.query(`UPDATE employees SET ${updates.join(', ')} WHERE id = ?`, values);
+    }
+
+    // 파견중 → 다른 상태로 변경 시 진행중인 파견 자동 종료
+    const newStatus = req.body.status;
+    if (currentStatus === '파견중' && newStatus && newStatus !== '파견중') {
+      const today = new Date().toISOString().split('T')[0];
+      await pool.query(
+        `UPDATE assignments SET status = '종료', end_date = ? WHERE employee_id = ? AND status = '진행중'`,
+        [today, employeeId]
+      );
     }
 
     // 기술역량 업데이트
     if (skills) {
-      await pool.query(`DELETE FROM employee_skills WHERE employee_id = ?`, [req.params.id]);
+      await pool.query(`DELETE FROM employee_skills WHERE employee_id = ?`, [employeeId]);
       for (const skill of skills) {
         await pool.query(
           `INSERT INTO employee_skills (employee_id, skill_id, level) VALUES (?, ?, ?)`,
-          [req.params.id, skill.id, skill.level || '중급']
+          [employeeId, skill.id, skill.level || '중급']
         );
       }
     }
@@ -604,6 +680,163 @@ app.delete('/api/servers/:id', async (req, res) => {
 });
 
 // ============================================
+// AI 보고서 API (사내 AI 서버 사용)
+// ============================================
+const AI_SERVER_URL = 'http://211.236.174.221:4000/v1/chat/completions';
+const AI_MODELS_URL = 'http://211.236.174.221:4000/v1/models';
+
+app.post('/api/ai/report', async (req, res) => {
+  try {
+    // 1. 대시보드 통계 데이터 수집
+    const [statusCounts] = await pool.query(`
+      SELECT status, COUNT(*) as count
+      FROM employees
+      GROUP BY status
+    `);
+
+    const [totalCount] = await pool.query(`SELECT COUNT(*) as total FROM employees`);
+
+    const [siteStats] = await pool.query(`
+      SELECT s.name as site_name, COUNT(a.id) as employee_count
+      FROM sites s
+      LEFT JOIN assignments a ON s.id = a.site_id AND a.status = '진행중'
+      WHERE s.status = '진행중'
+      GROUP BY s.id, s.name
+    `);
+
+    const [expiringContracts] = await pool.query(`
+      SELECT name, contract_end,
+             DATEDIFF(contract_end, CURDATE()) as days_left
+      FROM sites
+      WHERE contract_end BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      ORDER BY contract_end
+    `);
+
+    const [expiringAssignments] = await pool.query(`
+      SELECT a.id, a.end_date, e.name as employee_name, e.applied_part,
+             s.name as site_name, DATEDIFF(a.end_date, CURDATE()) as days_left
+      FROM assignments a
+      JOIN employees e ON a.employee_id = e.id
+      JOIN sites s ON a.site_id = s.id
+      WHERE a.status = '진행중'
+        AND a.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      ORDER BY a.end_date
+    `);
+
+    // 2. 통계 데이터 정리
+    const statusMap = statusCounts.reduce((acc, row) => {
+      acc[row.status] = row.count;
+      return acc;
+    }, {});
+
+    // 3. 프롬프트 구성
+    const today = new Date().toISOString().split('T')[0];
+    const prompt = `당신은 IT 인력 관리 전문가입니다. 아래 데이터를 바탕으로 인력현황요약보고서를 작성해주세요.
+
+## 현재 날짜: ${today}
+
+## 인력 현황
+- 전체 인원: ${totalCount[0].total}명
+- 파견중: ${statusMap['파견중'] || 0}명
+- 대기: ${statusMap['대기'] || 0}명
+- 재직: ${statusMap['재직'] || 0}명
+- 퇴사: ${statusMap['퇴사'] || 0}명
+
+## 파견 사이트별 인원
+${siteStats.map(s => `- ${s.site_name}: ${s.employee_count}명`).join('\n') || '- 파견 데이터 없음'}
+
+## 계약 만료 예정 사이트 (30일 이내)
+${expiringContracts.map(c => `- ${c.name}: ${c.contract_end.toISOString().split('T')[0]} (${c.days_left}일 남음)`).join('\n') || '- 해당 없음'}
+
+## 파견 만료 예정 인력 (30일 이내)
+${expiringAssignments.map(a => `- ${a.employee_name} (${a.applied_part || '미지정'}): ${a.site_name} - ${a.end_date.toISOString().split('T')[0]} (${a.days_left}일 남음)`).join('\n') || '- 해당 없음'}
+
+---
+위 데이터를 기반으로 아래 형식 그대로 보고서를 작성해주세요. 반드시 **숫자. 제목** 형식을 지켜주세요:
+
+**1. 요약**
+전체 인력 현황을 2~3문장으로 요약
+
+**2. 주요 현황**
+- **사이트명**: 인원수
+형식으로 파견 현황 정리
+
+**3. 주의 사항**
+- **만료일**: 해당 내용
+형식으로 만료 예정 건 정리
+
+**4. 권고 사항**
+1. **권고제목** 권고내용
+형식으로 권고사항 정리
+
+보고서는 한국어로 작성하고, 전문적이고 간결한 톤을 유지해주세요.`;
+
+    // 4. 사내 AI 서버 호출 (재시도 로직 포함)
+    const MAX_RETRIES = 3;
+    let reportContent = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      console.log(`AI 요청 시도 ${attempt}/${MAX_RETRIES}`);
+
+      const aiResponse = await fetch(AI_SERVER_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'qwen-vl-32b',
+          messages: [
+            { role: 'user', content: prompt }
+          ],
+          max_tokens: 4096,
+          temperature: 0.7,
+        }),
+      });
+
+      if (!aiResponse.ok) {
+        throw new Error(`AI server error: ${aiResponse.status}`);
+      }
+
+      const aiData = await aiResponse.json();
+      console.log('AI Response:', JSON.stringify(aiData, null, 2));
+
+      reportContent = aiData.choices[0]?.message?.content;
+
+      if (reportContent) {
+        console.log(`성공: ${attempt}번째 시도에서 응답 받음`);
+        break;
+      }
+
+      console.log(`실패: content가 null (finish_reason: ${aiData.choices[0]?.finish_reason})`);
+
+      if (attempt < MAX_RETRIES) {
+        console.log('재시도 중...');
+      }
+    }
+
+    if (!reportContent) {
+      reportContent = '보고서 생성에 실패했습니다. (3회 재시도 후 실패)';
+    }
+
+    // 5. 결과 반환
+    res.json({
+      report: reportContent,
+      generatedAt: new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
+      stats: {
+        total: totalCount[0].total,
+        statusCounts: statusMap,
+        siteStats,
+        expiringContracts: expiringContracts.length,
+        expiringAssignments: expiringAssignments.length,
+      }
+    });
+  } catch (e) {
+    console.error('AI Report Error:', e);
+    res.status(500).json({ message: 'AI 보고서 생성 오류', error: e.message });
+  }
+});
+
+// ============================================
 // AI 코멘트 API (기존)
 // ============================================
 app.post('/api/employees/:id/ai-comment', async (req, res) => {
@@ -629,8 +862,101 @@ app.post('/api/employees/:id/ai-comment', async (req, res) => {
 });
 
 // ============================================
+// AI 보고서 저장/조회 API
+// ============================================
+
+// 테이블 초기화 함수
+const initReportsTable = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        content TEXT,
+        generated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('ai_reports table ready');
+  } catch (e) {
+    console.error('Failed to create ai_reports table:', e);
+  }
+};
+
+// 보고서 저장
+app.post('/api/ai/reports', async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const [result] = await pool.query(
+      `INSERT INTO ai_reports (title, content) VALUES (?, ?)`,
+      [title, content]
+    );
+    res.json({ id: result.insertId, message: '보고서 저장 성공' });
+  } catch (e) {
+    console.error('Report save error:', e);
+    res.status(500).json({ message: '보고서 저장 오류' });
+  }
+});
+
+// 보고서 목록 조회 (페이지네이션 지원)
+app.get('/api/ai/reports', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM ai_reports`);
+    const [rows] = await pool.query(
+      `SELECT id, title, generated_at FROM ai_reports ORDER BY generated_at DESC LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+
+    res.json({
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (e) {
+    console.error('Report list error:', e);
+    res.status(500).json({ message: '보고서 목록 조회 오류' });
+  }
+});
+
+// 보고서 상세 조회
+app.get('/api/ai/reports/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT * FROM ai_reports WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ message: '보고서를 찾을 수 없습니다' });
+    }
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('Report detail error:', e);
+    res.status(500).json({ message: '보고서 조회 오류' });
+  }
+});
+
+// 보고서 삭제
+app.delete('/api/ai/reports/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM ai_reports WHERE id = ?`, [req.params.id]);
+    res.json({ message: '보고서 삭제 성공' });
+  } catch (e) {
+    console.error('Report delete error:', e);
+    res.status(500).json({ message: '보고서 삭제 오류' });
+  }
+});
+
+// ============================================
 // 서버 시작
 // ============================================
-app.listen(process.env.PORT || 4000, () =>
-  console.log(`API on :${process.env.PORT || 4000}`)
-);
+app.listen(process.env.PORT || 4000, async () => {
+  await initReportsTable();
+  console.log(`API on :${process.env.PORT || 4000}`);
+});

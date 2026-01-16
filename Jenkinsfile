@@ -13,6 +13,19 @@ pipeline {
             }
         }
 
+        stage('Pull Latest Code') {
+            steps {
+                dir("${APP_DIR}") {
+                    sh '''
+                        git config --global --add safe.directory ${APP_DIR}
+                        git fetch origin develop
+                        git checkout develop
+                        git reset --hard origin/develop
+                    '''
+                }
+            }
+        }
+
         stage('Install Dependencies') {
             steps {
                 dir("${APP_DIR}") {
@@ -25,14 +38,9 @@ pipeline {
             steps {
                 dir("${APP_DIR}") {
                     sh '''
-                        if pm2 describe ${PM2_APP_NAME} > /dev/null 2>&1; then
-                            echo "Restarting ${PM2_APP_NAME}..."
-                            pm2 restart ${PM2_APP_NAME}
-                        else
-                            echo "Starting ${PM2_APP_NAME}..."
-                            pm2 start server.js --name ${PM2_APP_NAME}
-                        fi
-                        pm2 save
+                        echo "Restarting ${PM2_APP_NAME} (root pm2)..."
+                        sudo pm2 restart ${PM2_APP_NAME} || sudo pm2 start server.js --name ${PM2_APP_NAME}
+                        sudo pm2 save
                     '''
                 }
             }
@@ -41,7 +49,7 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh 'sleep 5'
-                sh 'curl -f http://localhost:4000/ || exit 1'
+                sh 'curl -f http://localhost:4040/ || exit 1'
             }
         }
     }
