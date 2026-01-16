@@ -200,7 +200,7 @@ app.get('/api/employees', async (req, res) => {
     const { status, search } = req.query;
     let query = `
       SELECT e.id, e.name, e.position, e.hire_date, e.status, e.email, e.phone,
-             e.age, e.address, e.applied_part, e.birth_date,
+             e.age, e.address, e.applied_part, e.birth_date, e.gender,
              d.name AS department
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.id
@@ -213,8 +213,20 @@ app.get('/api/employees', async (req, res) => {
       params.push(status);
     }
     if (search) {
-      query += ` AND (e.name LIKE ? OR e.email LIKE ? OR e.phone LIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      query += ` AND (
+        e.name LIKE ? OR
+        e.email LIKE ? OR
+        e.phone LIKE ? OR
+        e.address LIKE ? OR
+        e.gender LIKE ? OR
+        e.position LIKE ? OR
+        e.applied_part LIKE ? OR
+        e.status LIKE ? OR
+        e.work_history LIKE ? OR
+        e.project_history LIKE ?
+      )`;
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam, searchParam);
     }
 
     query += ` ORDER BY e.id DESC`;
@@ -250,15 +262,15 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, skills } = req.body;
+    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, skills, project_history, gender, current_company, work_period, work_history } = req.body;
 
     if (!name) {
       return res.status(400).json({ message: '이름은 필수입니다.' });
     }
 
     const sql = `INSERT INTO employees
-      (name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '대기')`;
+      (name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status, project_history, gender, current_company, work_period, work_history)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '대기', ?, ?, ?, ?, ?)`;
 
     const [result] = await pool.query(sql, [
       name,
@@ -271,6 +283,11 @@ app.post('/api/employees', async (req, res) => {
       address || null,
       applied_part || null,
       birth_date || null,
+      project_history || null,
+      gender || null,
+      current_company || null,
+      work_period || null,
+      work_history || null,
     ]);
 
     // 기술역량 추가
@@ -300,7 +317,7 @@ app.put('/api/employees/:id', async (req, res) => {
     const currentStatus = currentEmployee[0]?.status;
 
     // 동적으로 업데이트할 필드만 처리
-    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status'];
+    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status', 'project_history', 'gender', 'current_company', 'work_period', 'work_history'];
     const updates = [];
     const values = [];
 
