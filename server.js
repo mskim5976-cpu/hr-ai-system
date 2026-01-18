@@ -7,6 +7,27 @@ const { exec } = require('child_process');
 const util = require('util');
 const net = require('net');
 const execPromise = util.promisify(exec);
+const multer = require('multer');
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
+const xlsx = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+
+// 파일 업로드 설정
+const upload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['.pdf', '.hwp', '.docx', '.doc', '.xlsx', '.xls', '.txt', '.csv'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedTypes.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('지원하지 않는 파일 형식입니다.'));
+    }
+  }
+});
 
 // 포트 체크 함수
 const checkPort = (host, port, timeout = 2000) => {
@@ -93,6 +114,185 @@ app.get('/api/ai/health', (req, res) => {
   });
 
   request.end();
+});
+
+// ============================================
+// AI 이력서 파싱 API
+// ============================================
+
+// 파일에서 텍스트 추출 함수
+async function extractTextFromFile(filePath, originalName) {
+  const ext = path.extname(originalName).toLowerCase();
+  let text = '';
+
+  try {
+    if (ext === '.pdf') {
+      const dataBuffer = fs.readFileSync(filePath);
+      const pdfData = await pdfParse(dataBuffer);
+      text = pdfData.text;
+    } else if (ext === '.docx' || ext === '.doc') {
+      const result = await mammoth.extractRawText({ path: filePath });
+      text = result.value;
+    } else if (ext === '.xlsx' || ext === '.xls') {
+      const workbook = xlsx.readFile(filePath);
+      const sheetNames = workbook.SheetNames;
+      sheetNames.forEach(sheetName => {
+        const sheet = workbook.Sheets[sheetName];
+        text += xlsx.utils.sheet_to_txt(sheet) + '\n';
+      });
+    } else if (ext === '.txt' || ext === '.csv') {
+      text = fs.readFileSync(filePath, 'utf-8');
+    } else if (ext === '.hwp') {
+      // HWP는 복잡한 형식이라 기본 텍스트 추출 시도
+      text = fs.readFileSync(filePath, 'utf-8');
+    }
+  } catch (error) {
+    console.error('파일 텍스트 추출 오류:', error);
+    throw new Error('파일 내용을 읽을 수 없습니다.');
+  }
+
+  return text;
+}
+
+// AI로 이력서 분석
+app.post('/api/ai/parse-resume', upload.single('resume'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: '파일이 업로드되지 않았습니다.' });
+  }
+
+  const filePath = req.file.path;
+  const originalName = req.file.originalname;
+
+  try {
+    // 1. 파일에서 텍스트 추출
+    const resumeText = await extractTextFromFile(filePath, originalName);
+
+    if (!resumeText || resumeText.trim().length < 10) {
+      throw new Error('이력서에서 텍스트를 추출할 수 없습니다.');
+    }
+
+    // 2. AI API 호출
+    const http = require('http');
+    const aiPrompt = `다음 이력서 내용을 분석하여 아래 JSON 형식으로 정보를 추출해주세요.
+반드시 JSON 형식으로만 응답하고, 다른 설명은 하지 마세요.
+정보가 없는 필드는 빈 문자열("")로 남겨두세요.
+
+추출할 필드:
+{
+  "name": "이름",
+  "phone": "연락처 (010-0000-0000 형식)",
+  "email": "이메일",
+  "age": "나이 (숫자만)",
+  "birth_date": "생년월일 (YYYY-MM-DD 형식)",
+  "address": "주소",
+  "gender": "성별 (남성 또는 여성)",
+  "applied_part": "담당업무/직무 (Backend, Frontend, Fullstack, DevOps, DBA, QA, PM 중 하나)",
+  "work_history": [
+    {
+      "company_name": "회사명",
+      "period": "근무기간 (예: 2020.01 ~ 2022.12)",
+      "applied_part": "담당업무",
+      "position": "직급"
+    }
+  ],
+  "project_history": [
+    {
+      "project_name": "프로젝트명",
+      "period_start": "시작일 (YYYY-MM 형식)",
+      "period_end": "종료일 (YYYY-MM 형식)",
+      "client": "고객사",
+      "company": "소속회사",
+      "employment_type": "고용형태 (정규직, 계약직, 파견, 프리랜서, 도급 중 하나)",
+      "role": "역할/주업무",
+      "environment": "개발환경/기술스택"
+    }
+  ],
+  "skills": ["Java", "Spring Boot", "React"]
+}
+
+이력서 내용:
+${resumeText.substring(0, 8000)}`;
+
+    const requestData = JSON.stringify({
+      model: 'qwen-vl-32b',
+      messages: [
+        { role: 'system', content: '당신은 이력서를 분석하여 구조화된 JSON 데이터로 변환하는 전문가입니다. 반드시 유효한 JSON만 응답하세요.' },
+        { role: 'user', content: aiPrompt }
+      ],
+      max_tokens: 4096,
+      temperature: 0.1
+    });
+
+    const aiResponse = await new Promise((resolve, reject) => {
+      const options = {
+        hostname: '211.236.174.221',
+        port: 4000,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer dummy',
+          'Content-Length': Buffer.byteLength(requestData)
+        },
+        timeout: 180000
+      };
+
+      const request = http.request(options, (response) => {
+        let data = '';
+        response.on('data', chunk => data += chunk);
+        response.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            resolve(parsed);
+          } catch (e) {
+            reject(new Error('AI 응답 파싱 오류'));
+          }
+        });
+      });
+
+      request.on('error', (e) => reject(new Error('AI 서버 연결 실패: ' + e.message)));
+      request.on('timeout', () => {
+        request.destroy();
+        reject(new Error('AI 서버 응답 시간 초과'));
+      });
+
+      request.write(requestData);
+      request.end();
+    });
+
+    // 3. AI 응답에서 JSON 추출
+    let parsedData = {};
+    if (aiResponse.choices && aiResponse.choices[0] && aiResponse.choices[0].message) {
+      const content = aiResponse.choices[0].message.content;
+      // JSON 블록 추출 시도
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          parsedData = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+          console.error('JSON 파싱 오류:', e);
+        }
+      }
+    }
+
+    // 4. 임시 파일 삭제
+    fs.unlinkSync(filePath);
+
+    res.json({
+      success: true,
+      message: '이력서 분석 완료',
+      data: parsedData,
+      rawText: resumeText.substring(0, 500) + '...'
+    });
+
+  } catch (error) {
+    // 임시 파일 삭제
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    console.error('이력서 파싱 오류:', error);
+    res.status(500).json({ message: error.message || '이력서 분석 중 오류가 발생했습니다.' });
+  }
 });
 
 // ============================================
@@ -201,6 +401,7 @@ app.get('/api/employees', async (req, res) => {
     let query = `
       SELECT e.id, e.name, e.position, e.hire_date, e.status, e.email, e.phone,
              e.age, e.address, e.applied_part, e.birth_date, e.gender,
+             e.current_applied_part, e.current_position,
              d.name AS department
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.id
@@ -262,15 +463,15 @@ app.get('/api/employees/:id', async (req, res) => {
 
 app.post('/api/employees', async (req, res) => {
   try {
-    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, skills, project_history, gender, current_company, work_period, work_history } = req.body;
+    const { name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, skills, project_history, gender, current_company, work_period, work_history, current_applied_part, current_position } = req.body;
 
     if (!name) {
       return res.status(400).json({ message: '이름은 필수입니다.' });
     }
 
     const sql = `INSERT INTO employees
-      (name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status, project_history, gender, current_company, work_period, work_history)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '대기', ?, ?, ?, ?, ?)`;
+      (name, department_id, position, hire_date, email, phone, age, address, applied_part, birth_date, status, project_history, gender, current_company, work_period, work_history, current_applied_part, current_position)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '대기', ?, ?, ?, ?, ?, ?, ?)`;
 
     const [result] = await pool.query(sql, [
       name,
@@ -288,6 +489,8 @@ app.post('/api/employees', async (req, res) => {
       current_company || null,
       work_period || null,
       work_history || null,
+      current_applied_part || null,
+      current_position || null,
     ]);
 
     // 기술역량 추가
@@ -317,7 +520,7 @@ app.put('/api/employees/:id', async (req, res) => {
     const currentStatus = currentEmployee[0]?.status;
 
     // 동적으로 업데이트할 필드만 처리
-    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status', 'project_history', 'gender', 'current_company', 'work_period', 'work_history'];
+    const allowedFields = ['name', 'department_id', 'position', 'hire_date', 'email', 'phone', 'age', 'address', 'applied_part', 'birth_date', 'status', 'project_history', 'gender', 'current_company', 'work_period', 'work_history', 'current_applied_part', 'current_position'];
     const updates = [];
     const values = [];
 
@@ -485,6 +688,7 @@ app.get('/api/assignments', async (req, res) => {
     const { status, site_id } = req.query;
     let query = `
       SELECT a.*, e.name as employee_name, e.position, e.applied_part,
+             e.current_applied_part, e.current_position,
              s.name as site_name
       FROM assignments a
       JOIN employees e ON a.employee_id = e.id
