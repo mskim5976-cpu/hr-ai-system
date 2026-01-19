@@ -8,7 +8,7 @@ const util = require('util');
 const net = require('net');
 const execPromise = util.promisify(exec);
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const mammoth = require('mammoth');
 const xlsx = require('xlsx');
 const fs = require('fs');
@@ -128,8 +128,10 @@ async function extractTextFromFile(filePath, originalName) {
   try {
     if (ext === '.pdf') {
       const dataBuffer = fs.readFileSync(filePath);
-      const pdfData = await pdfParse(dataBuffer);
-      text = pdfData.text;
+      const parser = new PDFParse({ data: dataBuffer });
+      const result = await parser.getText();
+      text = result.text;
+      await parser.destroy();  // 메모리 누수 방지
     } else if (ext === '.docx' || ext === '.doc') {
       const result = await mammoth.extractRawText({ path: filePath });
       text = result.value;
@@ -214,7 +216,7 @@ app.post('/api/ai/parse-resume', upload.single('resume'), async (req, res) => {
 ${resumeText.substring(0, 8000)}`;
 
     const requestData = JSON.stringify({
-      model: 'qwen-vl-32b',
+      model: 'llama-8b',
       messages: [
         { role: 'system', content: '당신은 이력서를 분석하여 구조화된 JSON 데이터로 변환하는 전문가입니다. 반드시 유효한 JSON만 응답하세요.' },
         { role: 'user', content: aiPrompt }
