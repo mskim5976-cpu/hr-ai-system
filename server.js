@@ -19,6 +19,9 @@ const upload = multer({
   dest: 'uploads/',
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (req, file, cb) => {
+    if (!file || !file.originalname) {
+      return cb(new Error('파일 정보가 올바르지 않습니다.'));
+    }
     const allowedTypes = ['.pdf', '.hwp', '.docx', '.doc', '.xlsx', '.xls', '.txt', '.csv'];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowedTypes.includes(ext)) {
@@ -122,6 +125,9 @@ app.get('/api/ai/health', (req, res) => {
 
 // 파일에서 텍스트 추출 함수
 async function extractTextFromFile(filePath, originalName) {
+  if (!originalName) {
+    throw new Error('파일 이름 정보가 없습니다.');
+  }
   const ext = path.extname(originalName).toLowerCase();
   let text = '';
 
@@ -209,8 +215,19 @@ app.post('/api/ai/parse-resume', upload.single('resume'), async (req, res) => {
       "environment": "개발환경/기술스택"
     }
   ],
-  "skills": ["Java", "Spring Boot", "React"]
+  "skills": [
+    {"name": "Java", "level": "고급"},
+    {"name": "Spring Boot", "level": "중급"},
+    {"name": "React", "level": "초급"}
+  ]
 }
+
+기술역량 레벨 평가 기준:
+- 고급: 5년 이상 경험 또는 다수 프로젝트에서 핵심 기술로 사용한 경우
+- 중급: 2-5년 경험 또는 실무 프로젝트 경험이 있는 경우
+- 초급: 2년 미만 경험 또는 학습/토이 프로젝트 수준인 경우
+
+이력서의 경력, 프로젝트 경험, 사용 빈도 등을 종합적으로 분석하여 각 기술별로 적절한 레벨을 평가해주세요.
 
 이력서 내용:
 ${resumeText.substring(0, 8000)}`;
@@ -1157,6 +1174,21 @@ app.delete('/api/ai/reports/:id', async (req, res) => {
     console.error('Report delete error:', e);
     res.status(500).json({ message: '보고서 삭제 오류' });
   }
+});
+
+// ============================================
+// Multer 에러 핸들러
+// ============================================
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ message: '파일 크기가 10MB를 초과합니다.' });
+    }
+    return res.status(400).json({ message: '파일 업로드 오류: ' + err.message });
+  } else if (err) {
+    return res.status(400).json({ message: err.message || '요청 처리 오류' });
+  }
+  next();
 });
 
 // ============================================
