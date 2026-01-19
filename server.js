@@ -797,7 +797,7 @@ app.put('/api/assignments/:id', async (req, res) => {
     }
 
     // 동적으로 업데이트할 필드만 처리
-    const allowedFields = ['start_date', 'end_date', 'monthly_rate', 'status'];
+    const allowedFields = ['site_id', 'start_date', 'end_date', 'monthly_rate', 'status'];
     const updates = [];
     const values = [];
 
@@ -1139,6 +1139,29 @@ const initReportsTable = async () => {
   }
 };
 
+// DB 마이그레이션 함수 (sites 테이블에 project_name 컬럼 추가)
+const runMigrations = async () => {
+  try {
+    // project_name 컬럼 존재 여부 확인
+    const [columns] = await pool.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sites'
+      AND COLUMN_NAME = 'project_name'
+    `);
+
+    if (columns.length === 0) {
+      console.log('Adding project_name column to sites table...');
+      await pool.query(`ALTER TABLE sites ADD COLUMN project_name VARCHAR(255) AFTER name`);
+      console.log('project_name column added successfully');
+    } else {
+      console.log('project_name column already exists');
+    }
+  } catch (error) {
+    console.error('Migration error:', error);
+  }
+};
+
 // 보고서 저장
 app.post('/api/ai/reports', async (req, res) => {
   try {
@@ -1229,6 +1252,7 @@ app.use((err, req, res, next) => {
 // 서버 시작
 // ============================================
 app.listen(process.env.PORT || 4000, async () => {
+  await runMigrations();  // DB 마이그레이션 실행
   await initReportsTable();
   console.log(`API on :${process.env.PORT || 4000}`);
 });
