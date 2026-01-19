@@ -32,6 +32,15 @@ const upload = multer({
   }
 });
 
+// 로컬 시간 기반 날짜 문자열 생성 (UTC 변환 이슈 방지)
+const getLocalDateString = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 // 포트 체크 함수
 const checkPort = (host, port, timeout = 2000) => {
   return new Promise((resolve) => {
@@ -55,6 +64,22 @@ const checkPort = (host, port, timeout = 2000) => {
 
     socket.connect(port, host);
   });
+};
+
+// Date 객체의 JSON 직렬화를 로컬 시간 기준으로 변경 (UTC 변환 방지)
+Date.prototype.toJSON = function() {
+  const year = this.getFullYear();
+  const month = String(this.getMonth() + 1).padStart(2, '0');
+  const day = String(this.getDate()).padStart(2, '0');
+  const hours = String(this.getHours()).padStart(2, '0');
+  const minutes = String(this.getMinutes()).padStart(2, '0');
+  const seconds = String(this.getSeconds()).padStart(2, '0');
+
+  // 시간이 00:00:00이면 날짜만 반환, 아니면 시간 포함
+  if (hours === '00' && minutes === '00' && seconds === '00') {
+    return `${year}-${month}-${day}`;
+  }
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
 const app = express();
@@ -558,7 +583,7 @@ app.put('/api/employees/:id', async (req, res) => {
     // 파견중 → 다른 상태로 변경 시 진행중인 파견 자동 종료
     const newStatus = req.body.status;
     if (currentStatus === '파견중' && newStatus && newStatus !== '파견중') {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDateString();
       await pool.query(
         `UPDATE assignments SET status = '종료', end_date = ? WHERE employee_id = ? AND status = '진행중'`,
         [today, employeeId]
@@ -987,7 +1012,7 @@ app.post('/api/ai/report', async (req, res) => {
     }, {});
 
     // 3. 프롬프트 구성
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateString();
     const prompt = `당신은 IT 인력 관리 전문가입니다. 아래 데이터를 바탕으로 인력현황요약보고서를 작성해주세요.
 
 ## 현재 날짜: ${today}
