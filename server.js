@@ -636,6 +636,40 @@ app.get('/api/sites', async (_, res) => {
       FROM sites s
       ORDER BY s.created_at DESC
     `);
+
+    // 상태 자동 계산 (계약기간 기반)
+    // 한국 시간 기준 오늘 날짜
+    const now = new Date();
+    const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+    const today = koreaTime.toISOString().split('T')[0];
+
+    rows.forEach(site => {
+      // 날짜를 YYYY-MM-DD 문자열로 변환
+      let endDate = null;
+      let startDate = null;
+
+      if (site.contract_end) {
+        endDate = site.contract_end instanceof Date
+          ? site.contract_end.toISOString().split('T')[0]
+          : String(site.contract_end).split('T')[0];
+      }
+
+      if (site.contract_start) {
+        startDate = site.contract_start instanceof Date
+          ? site.contract_start.toISOString().split('T')[0]
+          : String(site.contract_start).split('T')[0];
+      }
+
+      // 상태 자동 계산
+      if (endDate && endDate < today) {
+        site.status = '종료';
+      } else if (startDate && startDate > today) {
+        site.status = '대기';
+      } else {
+        site.status = '진행중';
+      }
+    });
+
     res.json(rows);
   } catch (e) {
     console.error(e);
@@ -656,12 +690,12 @@ app.get('/api/sites/:id', async (req, res) => {
 
 app.post('/api/sites', async (req, res) => {
   try {
-    const { name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status } = req.body;
+    const { name, project_name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status } = req.body;
 
     const [result] = await pool.query(`
-      INSERT INTO sites (name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status || '진행중']);
+      INSERT INTO sites (name, project_name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [name, project_name || null, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status || '진행중']);
 
     res.json({ message: '사이트 등록 성공', id: result.insertId });
   } catch (e) {
@@ -672,15 +706,15 @@ app.post('/api/sites', async (req, res) => {
 
 app.put('/api/sites/:id', async (req, res) => {
   try {
-    const { name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status } = req.body;
+    const { name, project_name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status } = req.body;
 
     await pool.query(`
       UPDATE sites SET
-        name = ?, address = ?, contact_person = ?, contact_phone = ?,
+        name = ?, project_name = ?, address = ?, contact_person = ?, contact_phone = ?,
         contract_start = ?, contract_end = ?, contract_amount = ?,
         contract_type = ?, status = ?
       WHERE id = ?
-    `, [name, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status, req.params.id]);
+    `, [name, project_name || null, address, contact_person, contact_phone, contract_start, contract_end, contract_amount, contract_type, status, req.params.id]);
 
     res.json({ message: '사이트 수정 성공' });
   } catch (e) {
@@ -708,7 +742,7 @@ app.get('/api/assignments', async (req, res) => {
     let query = `
       SELECT a.*, e.name as employee_name, e.position, e.applied_part,
              e.current_applied_part, e.current_position,
-             s.name as site_name
+             s.name as site_name, s.project_name as site_project_name
       FROM assignments a
       JOIN employees e ON a.employee_id = e.id
       JOIN sites s ON a.site_id = s.id
