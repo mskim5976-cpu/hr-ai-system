@@ -445,7 +445,7 @@ app.get('/api/employees', async (req, res) => {
     let query = `
       SELECT e.id, e.name, e.position, e.hire_date, e.status, e.email, e.phone,
              e.age, e.address, e.applied_part, e.birth_date, e.gender,
-             e.current_applied_part, e.current_position,
+             e.current_applied_part, e.current_position, e.current_company,
              d.name AS department
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.id
