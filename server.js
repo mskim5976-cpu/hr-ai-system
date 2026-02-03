@@ -101,47 +101,34 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 app.get('/', (_, res) => res.send('HR API OK'));
 
 // AI 서버 상태 확인 API
-app.get('/api/ai/health', (req, res) => {
-  const http = require('http');
-  const options = {
-    hostname: '211.236.174.221',
-    port: 80,
-    path: '/v1/models',
-    method: 'GET',
-    timeout: 5000,
-  };
+app.get('/api/ai/health', async (req, res) => {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-  const request = http.request(options, (response) => {
-    let data = '';
-    response.on('data', (chunk) => { data += chunk; });
-    response.on('end', () => {
-      if (response.statusCode === 200) {
-        try {
-          const parsed = JSON.parse(data);
-          res.json({
-            status: 'connected',
-            message: 'AI 서버 연결됨',
-            models: parsed.data?.map(m => m.id) || [],
-          });
-        } catch (e) {
-          res.json({ status: 'connected', message: 'AI 서버 연결됨', models: [] });
-        }
-      } else {
-        res.json({ status: 'error', message: `AI 서버 응답 오류: ${response.statusCode}` });
-      }
+    const response = await fetch('http://211.236.174.220:4001/v1/models', {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer sk-1234'
+      },
+      signal: controller.signal
     });
-  });
 
-  request.on('error', () => {
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      res.json({
+        status: 'connected',
+        message: 'AI 서버 연결됨',
+        models: data.data?.map(m => m.id) || [],
+      });
+    } else {
+      res.json({ status: 'error', message: `AI 서버 응답 오류: ${response.status}` });
+    }
+  } catch (error) {
     res.json({ status: 'disconnected', message: 'AI 서버 연결 실패' });
-  });
-
-  request.on('timeout', () => {
-    request.destroy();
-    res.json({ status: 'disconnected', message: 'AI 서버 연결 시간 초과' });
-  });
-
-  request.end();
+  }
 });
 
 // ============================================
@@ -269,13 +256,13 @@ ${resumeText.substring(0, 8000)}`;
 
     const aiResponse = await new Promise((resolve, reject) => {
       const options = {
-        hostname: '211.236.174.221',
-        port: 4000,
+        hostname: '211.236.174.220',
+        port: 4001,
         path: '/v1/chat/completions',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer dummy',
+          'Authorization': 'Bearer sk-1234',
           'Content-Length': Buffer.byteLength(requestData)
         },
         timeout: 180000
@@ -964,8 +951,8 @@ app.delete('/api/servers/:id', async (req, res) => {
 // ============================================
 // AI 보고서 API (사내 AI 서버 사용)
 // ============================================
-const AI_SERVER_URL = 'http://211.236.174.221:4000/v1/chat/completions';
-const AI_MODELS_URL = 'http://211.236.174.221:4000/v1/models';
+const AI_SERVER_URL = 'http://211.236.174.220:4001/v1/chat/completions';
+const AI_MODELS_URL = 'http://211.236.174.220:4001/v1/models';
 
 app.post('/api/ai/report', async (req, res) => {
   try {
@@ -1064,9 +1051,10 @@ ${expiringAssignments.map(a => `- ${a.employee_name} (${a.applied_part || '미�
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': 'Bearer sk-1234',
         },
         body: JSON.stringify({
-          model: 'qwen-vl-32b',
+          model: 'gpt-oss',
           messages: [
             { role: 'user', content: prompt }
           ],
